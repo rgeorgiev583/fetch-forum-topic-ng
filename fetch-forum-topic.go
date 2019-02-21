@@ -85,7 +85,7 @@ func getFailedDownloads(targetDir string) (failedPageNumbers []uint) {
 	return
 }
 
-func getResource(urlStr string, description string) (contentReader io.ReadCloser, contentType string, err error) {
+func getResource(urlStr, description string) (contentReader io.ReadCloser, contentType string, err error) {
 	response, err := http.Get(urlStr)
 	if err != nil {
 		log.Printf("error: could not fetch %s: HTTP GET request failed\n", description)
@@ -103,7 +103,7 @@ func getResource(urlStr string, description string) (contentReader io.ReadCloser
 	return
 }
 
-func adjustResourceFilenameExtension(filename string, contentType string) string {
+func adjustResourceFilenameExtension(filename, contentType string) string {
 	if strings.HasPrefix(contentType, "text/html") || strings.HasPrefix(contentType, "application/xhtml+xml") {
 		filenameEndsWithHTML, _ := filepath.Match("*.[Hh][Tt][Mm][Ll]", filename)
 		filenameEndsWithHTM, _ := filepath.Match("*.[Hh][Tt][Mm]", filename)
