@@ -21,7 +21,7 @@ import (
 const failureListFileBasename = "failures.lst"
 
 var forumTopicPostStep uint
-var forumTopicPageURLTemplate string
+var forumTopicPageURLBase string
 var targetDir string
 var isVerboseMode bool
 
@@ -130,19 +130,19 @@ func adjustResourceFilenameExtension(filename string, contentType string) string
 	return filename
 }
 
-func getLocalResourceRelativeReference(resourceURL *url.URL, contentType string) (relativeReference string) {
+func getLocalResourceRelativeReference(uri *url.URL, contentType string) (relativeReference string) {
 	relativeURIReference := url.URL{
-		Opaque:   resourceURL.Opaque,
-		Path:     resourceURL.Path,
-		RawQuery: resourceURL.RawQuery,
+		Opaque:   uri.Opaque,
+		Path:     uri.Path,
+		RawQuery: uri.RawQuery,
 	}
 	relativeReference = relativeURIReference.String()
 	relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
 	return
 }
 
-func writeResourceContentToFile(content []byte, contentType string, resourceURL *url.URL, resourceDescription, targetHostDir string) (err error) {
-	resourcePath := getLocalResourceRelativeReference(resourceURL, contentType)
+func writeResourceContentToFile(content []byte, contentType string, resourceURI *url.URL, resourceDescription, targetHostDir string) (err error) {
+	resourcePath := getLocalResourceRelativeReference(resourceURI, contentType)
 	filename := filepath.Join(targetHostDir, filepath.FromSlash(resourcePath))
 
 	dirname := filepath.Dir(filename)
@@ -202,7 +202,7 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 	}()
 
 	postOffset := forumTopicPostStep * (pageNumber - 1)
-	pageURLStr := fmt.Sprintf("%s%d", forumTopicPageURLTemplate, postOffset)
+	pageURLStr := fmt.Sprintf("%s%d", forumTopicPageURLBase, postOffset)
 
 	if isVerboseMode {
 		log.Printf("Starting the fetching of page %d into directory %s...\n", pageNumber, targetDir)
@@ -220,7 +220,7 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 	pageDescription := fmt.Sprint("page", pageNumber)
 
 	contentReader, contentType, err := getResource(pageURL.String(), pageDescription)
-	document, err := html.Parse(contentReader)
+	contentDocument, err := html.Parse(contentReader)
 	if err != nil {
 		log.Println("error: could not parse HTML content of page", pageNumber)
 		return
@@ -322,10 +322,10 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 			node.Attr[linkURIAttrIndex].Val = linkURI.String()
 		}
 	}
-	recursivelyFetchRequisiteResourcesAndRewriteLinks(document)
+	recursivelyFetchRequisiteResourcesAndRewriteLinks(contentDocument)
 
 	var pageContentWriter strings.Builder
-	err = html.Render(&pageContentWriter, document)
+	err = html.Render(&pageContentWriter, contentDocument)
 	if err != nil {
 		log.Printf("error: could not render HTML content of page %d after rewriting of links\n", pageNumber)
 		return
@@ -387,7 +387,7 @@ Flags:
 		os.Exit(1)
 	}
 
-	forumTopicPageURLTemplate = args[0]
+	forumTopicPageURLBase = args[0]
 
 	failureListFilename := filepath.Join(targetDir, failureListFileBasename)
 
