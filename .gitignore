@@ -14,4 +14,7 @@
 # Temporary output of the Delve debugger tool
 debug
 
+# Name of executable output by the `go build` tool
+fetch-forum-topic-ng
+
 /test/
