@@ -141,9 +141,9 @@ func getLocalResourceRelativeReference(uri *url.URL, contentType string) (relati
 	return
 }
 
-func writeResourceContentToFile(content []byte, contentType string, resourceURI *url.URL, resourceDescription, targetHostDir string) (err error) {
+func openFileForResourceContent(resourceURI *url.URL, resourceDescription, contentType, targetHostDir string) (file *os.File, filename string, err error) {
 	resourcePath := getLocalResourceRelativeReference(resourceURI, contentType)
-	filename := filepath.Join(targetHostDir, filepath.FromSlash(resourcePath))
+	filename = filepath.Join(targetHostDir, filepath.FromSlash(resourcePath))
 
 	dirname := filepath.Dir(filename)
 	err = os.MkdirAll(dirname, os.ModePerm)
@@ -152,11 +152,17 @@ func writeResourceContentToFile(content []byte, contentType string, resourceURI 
 		return
 	}
 
-	file, err := os.Create(filename)
+	file, err = os.Create(filename)
 	if err != nil {
 		log.Printf("error: could not create file %s in which to write the content of %s\n", filename, resourceDescription)
 		return
 	}
+
+	return
+}
+
+func writeResourceContentToFile(content []byte, contentType string, resourceURI *url.URL, resourceDescription, targetHostDir string) (err error) {
+	file, filename, err := openFileForResourceContent(resourceURI, resourceDescription, contentType, targetHostDir)
 	defer file.Close()
 
 	_, err = file.Write(content)
@@ -220,122 +226,112 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 	pageDescription := fmt.Sprint("page", pageNumber)
 
 	contentReader, contentType, err := getResource(pageURL.String(), pageDescription)
-	contentDocument, err := html.Parse(contentReader)
-	if err != nil {
-		log.Println("error: could not parse HTML content of page", pageNumber)
-		return
-	}
-	contentReader.Close()
+	contentTokenizer := html.NewTokenizer(contentReader)
+
+	contentFile, contentFilename, err := openFileForResourceContent(pageURL, pageDescription, contentType, targetHostDir)
 
 	pageDirpath := filepath.Dir(filepath.FromSlash(pageURL.Path))
 
-	var fetchRequisiteResourcesAndRewriteLinks func(node *html.Node)
-	recursivelyFetchRequisiteResourcesAndRewriteLinks := func(node *html.Node) {
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			fetchRequisiteResourcesAndRewriteLinks(child)
-		}
-	}
-	fetchRequisiteResourcesAndRewriteLinks = func(node *html.Node) {
-		defer recursivelyFetchRequisiteResourcesAndRewriteLinks(node)
+	for contentTokenizer.Next() != html.ErrorToken {
+		func() {
+			token := contentTokenizer.Token()
 
-		if node.Type != html.ElementNode {
-			return
-		}
+			defer func() {
+				_, err := contentFile.WriteString(token.String())
+				if err != nil {
+					log.Printf("error: could not write part of the content of page %d in file %s successfully\n", pageNumber, contentFilename)
+					return
+				}
+			}()
 
-		var linkURIAttrAtom atom.Atom
-		var linkURIAttrIndex int
-		var linkURIStr, rel string
-		var hasLinkURIAttr, hasRel bool
-		for index, attr := range node.Attr {
-			if hasLinkURIAttr && hasRel {
-				break
+			if token.Type != html.SelfClosingTagToken && token.Type != html.StartTagToken {
+				return
 			}
 
-			attrKeyAtom := atom.Lookup([]byte(attr.Key))
-			switch attrKeyAtom {
-			case atom.Action, atom.Code, atom.Cite, atom.Data, atom.Formaction, atom.Href, atom.Icon, atom.Manifest, atom.Poster, atom.Src, atom.Srcset, atom.Usemap:
-				linkURIAttrAtom, linkURIAttrIndex, linkURIStr, hasLinkURIAttr = attrKeyAtom, index, attr.Val, true
+			var linkURIAttrAtom atom.Atom
+			var linkURIAttrIndex int
+			var linkURIStr, rel string
+			var hasLinkURIAttr, hasRel bool
+			for index, attr := range token.Attr {
+				if hasLinkURIAttr && hasRel {
+					break
+				}
 
-			case atom.Rel:
-				rel, hasRel = attr.Val, true
+				attrKeyAtom := atom.Lookup([]byte(attr.Key))
+				switch attrKeyAtom {
+				case atom.Action, atom.Code, atom.Cite, atom.Data, atom.Formaction, atom.Href, atom.Icon, atom.Manifest, atom.Poster, atom.Src, atom.Srcset, atom.Usemap:
+					linkURIAttrAtom, linkURIAttrIndex, linkURIStr, hasLinkURIAttr = attrKeyAtom, index, attr.Val, true
 
-			default:
-				switch attr.Key {
-				case "archive", "background", "codebase", "classid", "lowsrc", "longdesc", "profile":
-					linkURIAttrIndex, linkURIStr, hasLinkURIAttr = index, attr.Val, true
+				case atom.Rel:
+					rel, hasRel = attr.Val, true
+
+				default:
+					switch attr.Key {
+					case "archive", "background", "codebase", "classid", "lowsrc", "longdesc", "profile":
+						linkURIAttrIndex, linkURIStr, hasLinkURIAttr = index, attr.Val, true
+					}
 				}
 			}
-		}
 
-		if !hasLinkURIAttr {
-			return
-		}
+			if !hasLinkURIAttr {
+				return
+			}
 
-		linkURI, err := url.Parse(linkURIStr)
-		if err != nil {
-			log.Println("error: could not parse URL of resource", linkURIStr)
-			return
-		}
+			linkURI, err := url.Parse(linkURIStr)
+			if err != nil {
+				log.Println("error: could not parse URL of resource", linkURIStr)
+				return
+			}
 
-		isRelInline := strings.Contains(rel, "stylesheet") || strings.Contains(rel, "icon") || strings.Contains(rel, "shortcut")
-		if linkURIAttrAtom != atom.Action && linkURIAttrAtom != atom.Formaction && (linkURIAttrAtom != atom.Href || node.DataAtom != atom.A && node.DataAtom != atom.Area && node.DataAtom != atom.Embed && (node.DataAtom != atom.Link || hasRel && isRelInline)) {
-			resourceDescription := "resource " + linkURIStr
+			isRelInline := strings.Contains(rel, "stylesheet") || strings.Contains(rel, "icon") || strings.Contains(rel, "shortcut")
+			if linkURIAttrAtom != atom.Action && linkURIAttrAtom != atom.Formaction && (linkURIAttrAtom != atom.Href || token.DataAtom != atom.A && token.DataAtom != atom.Area && token.DataAtom != atom.Embed && (token.DataAtom != atom.Link || hasRel && isRelInline)) {
+				resourceDescription := "resource " + linkURIStr
 
-			if linkURI.Opaque == "" {
-				if linkURI.Path != "" {
-					linkURI = pageURL.ResolveReference(linkURI)
+				if linkURI.Opaque == "" {
+					if linkURI.Path != "" {
+						linkURI = pageURL.ResolveReference(linkURI)
 
+						contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, targetHostDir)
+						if err != nil {
+							return
+						}
+
+						relativeLinkPath, err := filepath.Rel(pageDirpath, filepath.FromSlash(linkURI.Path))
+						if err != nil {
+							log.Println("error: could not determine relative path to resource", linkURIStr)
+							return
+						}
+
+						relativeReference := filepath.ToSlash(relativeLinkPath)
+						if linkURI.RawQuery != "" {
+							relativeReference += "%3F" + linkURI.RawQuery
+						}
+						relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
+						token.Attr[linkURIAttrIndex].Val = relativeReference
+					}
+				} else {
 					contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, targetHostDir)
 					if err != nil {
 						return
 					}
 
-					relativeLinkPath, err := filepath.Rel(pageDirpath, filepath.FromSlash(linkURI.Path))
-					if err != nil {
-						log.Println("error: could not determine relative path to resource", linkURIStr)
-						return
-					}
-
-					relativeReference := filepath.ToSlash(relativeLinkPath)
+					relativeReference := linkURI.Opaque
 					if linkURI.RawQuery != "" {
 						relativeReference += "%3F" + linkURI.RawQuery
 					}
 					relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
-					node.Attr[linkURIAttrIndex].Val = relativeReference
+					token.Attr[linkURIAttrIndex].Val = relativeReference
 				}
 			} else {
-				contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, targetHostDir)
-				if err != nil {
-					return
-				}
+				linkURI = pageURL.ResolveReference(linkURI)
 
-				relativeReference := linkURI.Opaque
-				if linkURI.RawQuery != "" {
-					relativeReference += "%3F" + linkURI.RawQuery
-				}
-				relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
-				node.Attr[linkURIAttrIndex].Val = relativeReference
+				token.Attr[linkURIAttrIndex].Val = linkURI.String()
 			}
-		} else {
-			linkURI = pageURL.ResolveReference(linkURI)
-
-			node.Attr[linkURIAttrIndex].Val = linkURI.String()
-		}
-	}
-	recursivelyFetchRequisiteResourcesAndRewriteLinks(contentDocument)
-
-	var pageContentWriter strings.Builder
-	err = html.Render(&pageContentWriter, contentDocument)
-	if err != nil {
-		log.Printf("error: could not render HTML content of page %d after rewriting of links\n", pageNumber)
-		return
+		}()
 	}
 
-	pageContentAfterRewrite := pageContentWriter.String()
-	err = writeResourceContentToFile([]byte(pageContentAfterRewrite), contentType, pageURL, pageDescription, targetHostDir)
-	if err != nil {
-		return
-	}
+	contentFile.Close()
+	contentReader.Close()
 
 	if isVerboseMode {
 		log.Printf("Finished the fetching of page %d.\n", pageNumber)
