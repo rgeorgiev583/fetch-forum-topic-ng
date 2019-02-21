@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -161,19 +160,6 @@ func openFileForResourceContent(resourceURI *url.URL, resourceDescription, conte
 	return
 }
 
-func writeResourceContentToFile(content []byte, contentType string, resourceURI *url.URL, resourceDescription, targetHostDir string) (err error) {
-	file, filename, err := openFileForResourceContent(resourceURI, resourceDescription, contentType, targetHostDir)
-	defer file.Close()
-
-	_, err = file.Write(content)
-	if err != nil {
-		log.Printf("error: could not write the content of %s in file %s successfully\n", resourceDescription, filename)
-		return
-	}
-
-	return
-}
-
 func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, targetHostDir string) (contentType string, err error) {
 	contentBody, contentType, err := getResource(resourceURL.String(), resourceDescription)
 	if err != nil {
@@ -181,14 +167,13 @@ func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, target
 	}
 	defer contentBody.Close()
 
-	content, err := ioutil.ReadAll(contentBody)
-	if err != nil {
-		log.Printf("error: could not fetch %s: could not read content of HTTP response body\n", resourceDescription)
-		return
-	}
+	file, filename, err := openFileForResourceContent(resourceURL, resourceDescription, contentType, targetHostDir)
+	defer file.Close()
 
-	err = writeResourceContentToFile(content, contentType, resourceURL, resourceDescription, targetHostDir)
+	contentBodyReader := bufio.NewReader(contentBody)
+	_, err = contentBodyReader.WriteTo(file)
 	if err != nil {
+		log.Printf("error: could not write the content of %s in file %s successfully\n", resourceDescription, filename)
 		return
 	}
 
