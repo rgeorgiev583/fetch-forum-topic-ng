@@ -13,3 +13,5 @@
 
 # Temporary output of the Delve debugger tool
 debug
+
+/test/
