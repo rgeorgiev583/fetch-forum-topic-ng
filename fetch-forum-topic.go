@@ -217,6 +217,12 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 
 	pageDirpath := filepath.Dir(filepath.FromSlash(pageURL.Path))
 
+	fetchedResources := map[string]struct{}{}
+	doesResourceHaveToBeFetched := func(resourceURI *url.URL) bool {
+		_, wasResourceFetched := fetchedResources[resourceURI.String()]
+		return !wasResourceFetched && resourceURI.Host == pageURL.Host
+	}
+
 	for contentTokenizer.Next() != html.ErrorToken {
 		func() {
 			token := contentTokenizer.Token()
@@ -275,6 +281,9 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 				if linkURI.Opaque == "" {
 					if linkURI.Path != "" {
 						linkURI = pageURL.ResolveReference(linkURI)
+						if !doesResourceHaveToBeFetched(linkURI) {
+							return
+						}
 
 						contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, targetHostDir)
 						if err != nil {
@@ -295,6 +304,10 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 						token.Attr[linkURIAttrIndex].Val = relativeReference
 					}
 				} else {
+					if !doesResourceHaveToBeFetched(linkURI) {
+						return
+					}
+
 					contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, targetHostDir)
 					if err != nil {
 						return
@@ -307,6 +320,8 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 					relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
 					token.Attr[linkURIAttrIndex].Val = relativeReference
 				}
+
+				fetchedResources[linkURI.String()] = struct{}{}
 			} else {
 				linkURI = pageURL.ResolveReference(linkURI)
 
