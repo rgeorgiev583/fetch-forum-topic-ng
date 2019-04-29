@@ -212,6 +212,7 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 
 	contentReader, contentType, err := getResource(pageURL.String(), pageDescription)
 	contentTokenizer := html.NewTokenizer(contentReader)
+	contentTokenizer.AllowCDATA(true)
 
 	contentFile, contentFilename, err := openFileForResourceContent(pageURL, pageDescription, contentType, targetHostDir)
 
