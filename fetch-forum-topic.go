@@ -180,6 +180,14 @@ func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, target
 	return
 }
 
+func stringWithScriptDataPreserved(token *html.Token, prevToken *html.Token) string {
+	if token.Type == html.TextToken && prevToken != nil && prevToken.Type == html.StartTagToken && prevToken.DataAtom == atom.Script {
+		return token.Data
+	}
+
+	return token.String()
+}
+
 func fetchForumTopicPage(pageNumber uint, targetDir string) {
 	var err error
 	defer func() {
@@ -224,16 +232,18 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 		return !wasResourceFetched && resourceURI.Host == pageURL.Host
 	}
 
+	var prevToken *html.Token
+
 	for contentTokenizer.Next() != html.ErrorToken {
 		func() {
 			token := contentTokenizer.Token()
 
 			defer func() {
-				_, err := contentFile.WriteString(token.String())
+				_, err := contentFile.WriteString(stringWithScriptDataPreserved(&token, prevToken))
 				if err != nil {
 					log.Printf("error: could not write part of the content of page %d in file %s successfully\n", pageNumber, contentFilename)
-					return
 				}
+				prevToken = &token
 			}()
 
 			if token.Type != html.SelfClosingTagToken && token.Type != html.StartTagToken {
