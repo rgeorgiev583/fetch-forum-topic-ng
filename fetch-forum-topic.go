@@ -234,7 +234,7 @@ func tagStringWithStyleDataPreserved(token *html.Token) string {
 		buffer.WriteByte(' ')
 		buffer.WriteString(attr.Key)
 		buffer.WriteString(`="`)
-		if atom.Lookup([]byte(attr.Key)) == atom.Style {
+		if atom.Lookup([]byte(attr.Key)) == atom.Style || strings.HasPrefix(attr.Key, "on") {
 			buffer.WriteString(attr.Val)
 		} else {
 			escape(buffer, attr.Val)
