@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -180,9 +181,79 @@ func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, target
 	return
 }
 
-func stringWithScriptDataPreserved(token *html.Token, prevToken *html.Token) string {
-	if token.Type == html.TextToken && prevToken != nil && prevToken.Type == html.StartTagToken && prevToken.DataAtom == atom.Script {
+type writer interface {
+	io.Writer
+	io.ByteWriter
+	WriteString(string) (int, error)
+}
+
+const escapedChars = "&'<>\"\r"
+
+// shamelessly stolen from "golang.org/x/net/html"
+func escape(w writer, s string) error {
+	i := strings.IndexAny(s, escapedChars)
+	for i != -1 {
+		if _, err := w.WriteString(s[:i]); err != nil {
+			return err
+		}
+		var esc string
+		switch s[i] {
+		case '&':
+			esc = "&amp;"
+		case '\'':
+			// "&#39;" is shorter than "&apos;" and apos was not in HTML until HTML5.
+			esc = "&#39;"
+		case '<':
+			esc = "&lt;"
+		case '>':
+			esc = "&gt;"
+		case '"':
+			// "&#34;" is shorter than "&quot;".
+			esc = "&#34;"
+		case '\r':
+			esc = "&#13;"
+		default:
+			panic("unrecognized escape character")
+		}
+		s = s[i+1:]
+		if _, err := w.WriteString(esc); err != nil {
+			return err
+		}
+		i = strings.IndexAny(s, escapedChars)
+	}
+	_, err := w.WriteString(s)
+	return err
+}
+
+func tagStringWithStyleDataPreserved(token *html.Token) string {
+	if len(token.Attr) == 0 {
 		return token.Data
+	}
+	buffer := bytes.NewBufferString(token.Data)
+	for _, attr := range token.Attr {
+		buffer.WriteByte(' ')
+		buffer.WriteString(attr.Key)
+		buffer.WriteString(`="`)
+		if atom.Lookup([]byte(attr.Key)) == atom.Style {
+			buffer.WriteString(attr.Val)
+		} else {
+			escape(buffer, attr.Val)
+		}
+		buffer.WriteByte('"')
+	}
+	return buffer.String()
+}
+
+func stringWithScriptAndStyleDataPreserved(token *html.Token, prevToken *html.Token) string {
+	switch token.Type {
+	case html.TextToken:
+		if prevToken != nil && prevToken.Type == html.StartTagToken && prevToken.DataAtom == atom.Script {
+			return token.Data
+		}
+	case html.StartTagToken:
+		return "<" + tagStringWithStyleDataPreserved(token) + ">"
+	case html.SelfClosingTagToken:
+		return "<" + tagStringWithStyleDataPreserved(token) + "/>"
 	}
 
 	return token.String()
@@ -239,7 +310,7 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 			token := contentTokenizer.Token()
 
 			defer func() {
-				_, err := contentFile.WriteString(stringWithScriptDataPreserved(&token, prevToken))
+				_, err := contentFile.WriteString(stringWithScriptAndStyleDataPreserved(&token, prevToken))
 				if err != nil {
 					log.Printf("error: could not write part of the content of page %d in file %s successfully\n", pageNumber, contentFilename)
 				}
