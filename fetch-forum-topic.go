@@ -28,7 +28,7 @@ var failureListFilename string
 var failureListFile *os.File
 var failureListFileMutex sync.Mutex
 
-//var workers sync.WaitGroup
+var workers sync.WaitGroup
 
 func getFailedDownloads(targetDir string) (failedPageNumbers []uint) {
 	failedPageNumbers = []uint{}
@@ -189,7 +189,7 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 			failureListFileMutex.Unlock()
 		}
 
-		//workers.Done()
+		workers.Done()
 	}()
 
 	postOffset := forumTopicPostStep * (pageNumber - 1)
@@ -444,9 +444,9 @@ Flags:
 				}
 			}
 		}
-		//workers.Add(1)
-		fetchForumTopicPage(forumTopicPageNumber, forumTopicPageTargetDir)
+		workers.Add(1)
+		go fetchForumTopicPage(forumTopicPageNumber, forumTopicPageTargetDir)
 	}
 
-	//workers.Wait()
+	workers.Wait()
 }
