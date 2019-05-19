@@ -21,12 +21,11 @@ import (
 )
 
 type resourceFetcherContext struct {
-	baseURL                     *url.URL
-	targetHostDir               string
-	dirpath                     string
-	doesResourceHaveToBeFetched func(resourceURI *url.URL) bool
-	replaceResourceReference    func(reference string)
-	markResourceAsFetched       func(linkURI *url.URL)
+	baseURL                  *url.URL
+	targetHostDir            string
+	dirpath                  string
+	fetchedResources         map[string]struct{}
+	replaceResourceReference func(reference string)
 }
 
 const failureListFileBasename = "failures.lst"
@@ -175,6 +174,11 @@ func openFileForResourceContent(resourceURI *url.URL, resourceDescription, conte
 }
 
 func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcherContext) (ok bool) {
+	doesResourceHaveToBeFetched := func(resourceURI *url.URL) bool {
+		_, wasResourceFetched := context.fetchedResources[resourceURI.String()]
+		return !wasResourceFetched && resourceURI.Host == context.baseURL.Host
+	}
+
 	resourceDescription := "resource " + linkURI.String()
 
 	if linkURI.Opaque == "" {
@@ -183,11 +187,11 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 		}
 
 		linkURI = context.baseURL.ResolveReference(linkURI)
-		if !context.doesResourceHaveToBeFetched(linkURI) {
+		if !doesResourceHaveToBeFetched(linkURI) {
 			return
 		}
 
-		contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.doesResourceHaveToBeFetched, context.markResourceAsFetched)
+		contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.fetchedResources)
 		if err != nil {
 			return
 		}
@@ -205,11 +209,11 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 		relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
 		context.replaceResourceReference(relativeReference)
 	} else {
-		if !context.doesResourceHaveToBeFetched(linkURI) {
+		if !doesResourceHaveToBeFetched(linkURI) {
 			return
 		}
 
-		contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.doesResourceHaveToBeFetched, context.markResourceAsFetched)
+		contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.fetchedResources)
 		if err != nil {
 			return
 		}
@@ -222,7 +226,7 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 		context.replaceResourceReference(relativeReference)
 	}
 
-	context.markResourceAsFetched(linkURI)
+	context.fetchedResources[linkURI.String()] = struct{}{}
 	return true
 }
 
@@ -259,7 +263,7 @@ func fetchLinkedResourcesInCSS(css []byte, context *resourceFetcherContext) (rew
 	return
 }
 
-func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, targetHostDir string, doesResourceHaveToBeFetched func(resourceURI *url.URL) bool, markResourceAsFetched func(linkURI *url.URL)) (contentType string, err error) {
+func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, targetHostDir string, fetchedResources map[string]struct{}) (contentType string, err error) {
 	contentBody, contentType, err := getResource(resourceURL.String(), resourceDescription)
 	if err != nil {
 		return
@@ -277,11 +281,10 @@ func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, target
 		}
 
 		context := &resourceFetcherContext{
-			baseURL:                     resourceURL,
-			targetHostDir:               targetHostDir,
-			dirpath:                     filepath.Dir(filepath.FromSlash(resourceURL.Path)),
-			doesResourceHaveToBeFetched: doesResourceHaveToBeFetched,
-			markResourceAsFetched:       markResourceAsFetched,
+			baseURL:          resourceURL,
+			targetHostDir:    targetHostDir,
+			dirpath:          filepath.Dir(filepath.FromSlash(resourceURL.Path)),
+			fetchedResources: fetchedResources,
 		}
 		content, err = fetchLinkedResourcesInCSS(content, context)
 		if err != nil {
@@ -418,10 +421,6 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 	pageDirpath := filepath.Dir(filepath.FromSlash(pageURL.Path))
 
 	fetchedResources := map[string]struct{}{}
-	doesResourceHaveToBeFetched := func(resourceURI *url.URL) bool {
-		_, wasResourceFetched := fetchedResources[resourceURI.String()]
-		return !wasResourceFetched && resourceURI.Host == pageURL.Host
-	}
 
 	var prevToken *html.Token
 
@@ -443,13 +442,10 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 
 			if prevToken.DataAtom == atom.Style {
 				context := &resourceFetcherContext{
-					baseURL:                     pageURL,
-					targetHostDir:               targetHostDir,
-					dirpath:                     pageDirpath,
-					doesResourceHaveToBeFetched: doesResourceHaveToBeFetched,
-					markResourceAsFetched: func(linkURI *url.URL) {
-						fetchedResources[linkURI.String()] = struct{}{}
-					},
+					baseURL:          pageURL,
+					targetHostDir:    targetHostDir,
+					dirpath:          pageDirpath,
+					fetchedResources: fetchedResources,
 				}
 				styleData := []byte(token.Data)
 				styleData, err = fetchLinkedResourcesInCSS(styleData, context)
@@ -489,13 +485,10 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 
 				if hasStyle {
 					context := &resourceFetcherContext{
-						baseURL:                     pageURL,
-						targetHostDir:               targetHostDir,
-						dirpath:                     pageDirpath,
-						doesResourceHaveToBeFetched: doesResourceHaveToBeFetched,
-						markResourceAsFetched: func(linkURI *url.URL) {
-							fetchedResources[linkURI.String()] = struct{}{}
-						},
+						baseURL:          pageURL,
+						targetHostDir:    targetHostDir,
+						dirpath:          pageDirpath,
+						fetchedResources: fetchedResources,
 					}
 					styleData := []byte(style)
 					styleData, err = fetchLinkedResourcesInCSS(styleData, context)
@@ -519,15 +512,12 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 				isRelInline := strings.Contains(rel, "stylesheet") || strings.Contains(rel, "icon") || strings.Contains(rel, "shortcut")
 				if linkURIAttrAtom != atom.Action && linkURIAttrAtom != atom.Formaction && (linkURIAttrAtom != atom.Href || token.DataAtom != atom.A && token.DataAtom != atom.Area && token.DataAtom != atom.Embed && (token.DataAtom != atom.Link || hasRel && isRelInline)) {
 					context := &resourceFetcherContext{
-						baseURL:                     pageURL,
-						targetHostDir:               targetHostDir,
-						dirpath:                     pageDirpath,
-						doesResourceHaveToBeFetched: doesResourceHaveToBeFetched,
+						baseURL:          pageURL,
+						targetHostDir:    targetHostDir,
+						dirpath:          pageDirpath,
+						fetchedResources: fetchedResources,
 						replaceResourceReference: func(reference string) {
 							token.Attr[linkURIAttrIndex].Val = reference
-						},
-						markResourceAsFetched: func(linkURI *url.URL) {
-							fetchedResources[linkURI.String()] = struct{}{}
 						},
 					}
 					fetchResourceFromLinkIfNecessary(linkURI, context)
