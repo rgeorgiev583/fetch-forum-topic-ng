@@ -176,11 +176,6 @@ func openFileForResourceContent(resourceURI *url.URL, resourceDescription, conte
 func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcherContext) (ok bool) {
 	var err error
 
-	doesResourceHaveToBeFetched := func(resourceURI *url.URL) (bool, string) {
-		contentType, wasResourceFetched := context.fetchedResources[resourceURI.String()]
-		return !wasResourceFetched, contentType
-	}
-
 	resourceDescription := "resource " + linkURI.String()
 
 	if linkURI.Opaque == "" {
@@ -189,8 +184,8 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 		}
 
 		linkURI = context.baseURL.ResolveReference(linkURI)
-		hasToBeFetched, contentType := doesResourceHaveToBeFetched(linkURI)
-		if hasToBeFetched {
+		contentType, wasResourceFetched := context.fetchedResources[linkURI.String()]
+		if !wasResourceFetched {
 			contentType, err = getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.fetchedResources)
 			if err != nil {
 				return
@@ -212,8 +207,8 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 		relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
 		context.replaceResourceReference(relativeReference)
 	} else {
-		hasToBeFetched, contentType := doesResourceHaveToBeFetched(linkURI)
-		if hasToBeFetched {
+		contentType, wasResourceFetched := context.fetchedResources[linkURI.String()]
+		if wasResourceFetched {
 			contentType, err = getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.fetchedResources)
 			if err != nil {
 				return
