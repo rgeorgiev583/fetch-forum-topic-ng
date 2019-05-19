@@ -178,7 +178,7 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 
 	doesResourceHaveToBeFetched := func(resourceURI *url.URL) (bool, string) {
 		contentType, wasResourceFetched := context.fetchedResources[resourceURI.String()]
-		return !wasResourceFetched && resourceURI.Host == context.baseURL.Host, contentType
+		return !wasResourceFetched, contentType
 	}
 
 	resourceDescription := "resource " + linkURI.String()
