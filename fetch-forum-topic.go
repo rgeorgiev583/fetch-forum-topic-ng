@@ -364,7 +364,7 @@ func tagStringWithStyleDataPreserved(token *html.Token) string {
 	return buffer.String()
 }
 
-func stringWithScriptAndStyleDataPreserved(token *html.Token, prevToken *html.Token) string {
+func tokenStringWithScriptAndStyleDataPreserved(token *html.Token, prevToken *html.Token) string {
 	switch token.Type {
 	case html.TextToken:
 		if prevToken != nil && prevToken.Type == html.StartTagToken && prevToken.DataAtom == atom.Script {
@@ -430,7 +430,7 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 			token := contentTokenizer.Token()
 
 			defer func() {
-				_, err := contentFile.WriteString(stringWithScriptAndStyleDataPreserved(&token, prevToken))
+				_, err := contentFile.WriteString(tokenStringWithScriptAndStyleDataPreserved(&token, prevToken))
 				if err != nil {
 					log.Printf("error: could not write part of the content of page %d in file %s successfully\n", pageNumber, contentFilename)
 				}
