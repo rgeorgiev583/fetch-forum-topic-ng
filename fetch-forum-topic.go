@@ -6,11 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -18,7 +20,18 @@ import (
 	"golang.org/x/net/html/atom"
 )
 
+type resourceFetcherContext struct {
+	baseURL                     *url.URL
+	targetHostDir               string
+	dirpath                     string
+	doesResourceHaveToBeFetched func(resourceURI *url.URL) bool
+	replaceResourceReference    func(reference string)
+	markResourceAsFetched       func(linkURI *url.URL)
+}
+
 const failureListFileBasename = "failures.lst"
+
+var cssURLMatcher = regexp.MustCompile(`(url\s*\(["'])(.*?)(["']\))`)
 
 var forumTopicPostStep uint
 var forumTopicPageURLBase string
@@ -161,7 +174,92 @@ func openFileForResourceContent(resourceURI *url.URL, resourceDescription, conte
 	return
 }
 
-func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, targetHostDir string) (contentType string, err error) {
+func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcherContext) (ok bool) {
+	resourceDescription := "resource " + linkURI.String()
+
+	if linkURI.Opaque == "" {
+		if linkURI.Path == "" {
+			return
+		}
+
+		linkURI = context.baseURL.ResolveReference(linkURI)
+		if !context.doesResourceHaveToBeFetched(linkURI) {
+			return
+		}
+
+		contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.doesResourceHaveToBeFetched, context.markResourceAsFetched)
+		if err != nil {
+			return
+		}
+
+		relativeLinkPath, err := filepath.Rel(context.dirpath, filepath.FromSlash(linkURI.Path))
+		if err != nil {
+			log.Println("error: could not determine relative path to resource", linkURI.String())
+			return
+		}
+
+		relativeReference := filepath.ToSlash(relativeLinkPath)
+		if linkURI.RawQuery != "" {
+			relativeReference += "%3F" + linkURI.RawQuery
+		}
+		relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
+		context.replaceResourceReference(relativeReference)
+	} else {
+		if !context.doesResourceHaveToBeFetched(linkURI) {
+			return
+		}
+
+		contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.doesResourceHaveToBeFetched, context.markResourceAsFetched)
+		if err != nil {
+			return
+		}
+
+		relativeReference := linkURI.Opaque
+		if linkURI.RawQuery != "" {
+			relativeReference += "%3F" + linkURI.RawQuery
+		}
+		relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
+		context.replaceResourceReference(relativeReference)
+	}
+
+	context.markResourceAsFetched(linkURI)
+	return true
+}
+
+func fetchLinkedResourcesInCSS(css []byte, context *resourceFetcherContext) (rewrittenCSS []byte, err error) {
+	var rewrittenCSSBuffer bytes.Buffer
+
+	for urlMatch := cssURLMatcher.FindSubmatchIndex(css); urlMatch != nil; urlMatch = cssURLMatcher.FindSubmatchIndex(css) {
+		linkURIStr := string(css[urlMatch[4]:urlMatch[5]])
+
+		linkURI, err := url.Parse(linkURIStr)
+		if err != nil {
+			log.Println("error: could not parse URL of resource", linkURIStr)
+			rewrittenCSSBuffer.Write(css[:urlMatch[1]])
+			css = css[urlMatch[1]:]
+			continue
+		}
+
+		fullContext := *context
+		fullContext.replaceResourceReference = func(reference string) {
+			rewrittenCSSBuffer.Write(css[urlMatch[2]:urlMatch[3]])
+			rewrittenCSSBuffer.Write([]byte(reference))
+			rewrittenCSSBuffer.Write(css[urlMatch[6]:urlMatch[7]])
+		}
+
+		rewrittenCSSBuffer.Write(css[:urlMatch[0]])
+		if !fetchResourceFromLinkIfNecessary(linkURI, &fullContext) {
+			rewrittenCSSBuffer.Write(css[urlMatch[0]:urlMatch[1]])
+		}
+		css = css[urlMatch[1]:]
+	}
+
+	rewrittenCSSBuffer.Write(css)
+	rewrittenCSS = rewrittenCSSBuffer.Bytes()
+	return
+}
+
+func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, targetHostDir string, doesResourceHaveToBeFetched func(resourceURI *url.URL) bool, markResourceAsFetched func(linkURI *url.URL)) (contentType string, err error) {
 	contentBody, contentType, err := getResource(resourceURL.String(), resourceDescription)
 	if err != nil {
 		return
@@ -171,8 +269,30 @@ func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, target
 	file, filename, err := openFileForResourceContent(resourceURL, resourceDescription, contentType, targetHostDir)
 	defer file.Close()
 
-	contentBodyReader := bufio.NewReader(contentBody)
-	_, err = contentBodyReader.WriteTo(file)
+	if strings.HasPrefix(contentType, "text/css") {
+		content, err := ioutil.ReadAll(contentBody)
+		if err != nil {
+			log.Printf("error: could not read the content of %s successfully\n", resourceDescription)
+			return contentType, err
+		}
+
+		context := &resourceFetcherContext{
+			baseURL:                     resourceURL,
+			targetHostDir:               targetHostDir,
+			dirpath:                     filepath.Dir(filepath.FromSlash(resourceURL.Path)),
+			doesResourceHaveToBeFetched: doesResourceHaveToBeFetched,
+			markResourceAsFetched:       markResourceAsFetched,
+		}
+		content, err = fetchLinkedResourcesInCSS(content, context)
+		if err != nil {
+			log.Printf("warning: could not rewrite the links in the content of %s successfully\n", resourceDescription)
+		}
+
+		_, err = file.Write(content)
+	} else {
+		contentBodyReader := bufio.NewReader(contentBody)
+		_, err = contentBodyReader.WriteTo(file)
+	}
 	if err != nil {
 		log.Printf("error: could not write the content of %s in file %s successfully\n", resourceDescription, filename)
 		return
@@ -321,93 +441,101 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 				return
 			}
 
-			var linkURIAttrAtom atom.Atom
-			var linkURIAttrIndex int
-			var linkURIStr, rel string
-			var hasLinkURIAttr, hasRel bool
-			for index, attr := range token.Attr {
-				if hasLinkURIAttr && hasRel {
-					break
+			if prevToken.DataAtom == atom.Style {
+				context := &resourceFetcherContext{
+					baseURL:                     pageURL,
+					targetHostDir:               targetHostDir,
+					dirpath:                     pageDirpath,
+					doesResourceHaveToBeFetched: doesResourceHaveToBeFetched,
+					markResourceAsFetched: func(linkURI *url.URL) {
+						fetchedResources[linkURI.String()] = struct{}{}
+					},
+				}
+				styleData := []byte(token.Data)
+				styleData, err = fetchLinkedResourcesInCSS(styleData, context)
+				if err != nil {
+					log.Printf("error: could not rewrite the links in the content of the `style` element successfully\n")
 				}
 
-				attrKeyAtom := atom.Lookup([]byte(attr.Key))
-				switch attrKeyAtom {
-				case atom.Action, atom.Code, atom.Cite, atom.Data, atom.Formaction, atom.Href, atom.Icon, atom.Manifest, atom.Poster, atom.Src, atom.Srcset, atom.Usemap:
-					linkURIAttrAtom, linkURIAttrIndex, linkURIStr, hasLinkURIAttr = attrKeyAtom, index, attr.Val, true
-
-				case atom.Rel:
-					rel, hasRel = attr.Val, true
-
-				default:
-					switch attr.Key {
-					case "archive", "background", "codebase", "classid", "lowsrc", "longdesc", "profile":
-						linkURIAttrIndex, linkURIStr, hasLinkURIAttr = index, attr.Val, true
-					}
-				}
-			}
-
-			if !hasLinkURIAttr {
-				return
-			}
-
-			linkURI, err := url.Parse(linkURIStr)
-			if err != nil {
-				log.Println("error: could not parse URL of resource", linkURIStr)
-				return
-			}
-
-			isRelInline := strings.Contains(rel, "stylesheet") || strings.Contains(rel, "icon") || strings.Contains(rel, "shortcut")
-			if linkURIAttrAtom != atom.Action && linkURIAttrAtom != atom.Formaction && (linkURIAttrAtom != atom.Href || token.DataAtom != atom.A && token.DataAtom != atom.Area && token.DataAtom != atom.Embed && (token.DataAtom != atom.Link || hasRel && isRelInline)) {
-				resourceDescription := "resource " + linkURIStr
-
-				if linkURI.Opaque == "" {
-					if linkURI.Path != "" {
-						linkURI = pageURL.ResolveReference(linkURI)
-						if !doesResourceHaveToBeFetched(linkURI) {
-							return
-						}
-
-						contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, targetHostDir)
-						if err != nil {
-							return
-						}
-
-						relativeLinkPath, err := filepath.Rel(pageDirpath, filepath.FromSlash(linkURI.Path))
-						if err != nil {
-							log.Println("error: could not determine relative path to resource", linkURIStr)
-							return
-						}
-
-						relativeReference := filepath.ToSlash(relativeLinkPath)
-						if linkURI.RawQuery != "" {
-							relativeReference += "%3F" + linkURI.RawQuery
-						}
-						relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
-						token.Attr[linkURIAttrIndex].Val = relativeReference
-					}
-				} else {
-					if !doesResourceHaveToBeFetched(linkURI) {
-						return
-					}
-
-					contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, targetHostDir)
-					if err != nil {
-						return
-					}
-
-					relativeReference := linkURI.Opaque
-					if linkURI.RawQuery != "" {
-						relativeReference += "%3F" + linkURI.RawQuery
-					}
-					relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
-					token.Attr[linkURIAttrIndex].Val = relativeReference
-				}
-
-				fetchedResources[linkURI.String()] = struct{}{}
+				token.Data = string(styleData)
 			} else {
-				linkURI = pageURL.ResolveReference(linkURI)
+				var linkURIAttrAtom atom.Atom
+				var linkURIAttrIndex, styleIndex int
+				var linkURIStr, rel, style string
+				var hasLinkURIAttr, hasRel, hasStyle bool
+				for index, attr := range token.Attr {
+					if hasLinkURIAttr && hasRel {
+						break
+					}
 
-				token.Attr[linkURIAttrIndex].Val = linkURI.String()
+					attrKeyAtom := atom.Lookup([]byte(attr.Key))
+					switch attrKeyAtom {
+					case atom.Action, atom.Code, atom.Cite, atom.Data, atom.Formaction, atom.Href, atom.Icon, atom.Manifest, atom.Poster, atom.Src, atom.Srcset, atom.Usemap:
+						linkURIAttrAtom, linkURIAttrIndex, linkURIStr, hasLinkURIAttr = attrKeyAtom, index, attr.Val, true
+
+					case atom.Rel:
+						rel, hasRel = attr.Val, true
+
+					case atom.Style:
+						styleIndex, style, hasStyle = index, attr.Val, true
+
+					default:
+						switch attr.Key {
+						case "archive", "background", "codebase", "classid", "lowsrc", "longdesc", "profile":
+							linkURIAttrIndex, linkURIStr, hasLinkURIAttr = index, attr.Val, true
+						}
+					}
+				}
+
+				if hasStyle {
+					context := &resourceFetcherContext{
+						baseURL:                     pageURL,
+						targetHostDir:               targetHostDir,
+						dirpath:                     pageDirpath,
+						doesResourceHaveToBeFetched: doesResourceHaveToBeFetched,
+						markResourceAsFetched: func(linkURI *url.URL) {
+							fetchedResources[linkURI.String()] = struct{}{}
+						},
+					}
+					styleData := []byte(style)
+					styleData, err = fetchLinkedResourcesInCSS(styleData, context)
+					if err != nil {
+						log.Printf("error: could not rewrite the links in the content of the `style` attribute successfully\n")
+					}
+
+					token.Attr[styleIndex].Val = string(styleData)
+				}
+
+				if !hasLinkURIAttr {
+					return
+				}
+
+				linkURI, err := url.Parse(linkURIStr)
+				if err != nil {
+					log.Println("error: could not parse URL of resource", linkURIStr)
+					return
+				}
+
+				isRelInline := strings.Contains(rel, "stylesheet") || strings.Contains(rel, "icon") || strings.Contains(rel, "shortcut")
+				if linkURIAttrAtom != atom.Action && linkURIAttrAtom != atom.Formaction && (linkURIAttrAtom != atom.Href || token.DataAtom != atom.A && token.DataAtom != atom.Area && token.DataAtom != atom.Embed && (token.DataAtom != atom.Link || hasRel && isRelInline)) {
+					context := &resourceFetcherContext{
+						baseURL:                     pageURL,
+						targetHostDir:               targetHostDir,
+						dirpath:                     pageDirpath,
+						doesResourceHaveToBeFetched: doesResourceHaveToBeFetched,
+						replaceResourceReference: func(reference string) {
+							token.Attr[linkURIAttrIndex].Val = reference
+						},
+						markResourceAsFetched: func(linkURI *url.URL) {
+							fetchedResources[linkURI.String()] = struct{}{}
+						},
+					}
+					fetchResourceFromLinkIfNecessary(linkURI, context)
+				} else {
+					linkURI = pageURL.ResolveReference(linkURI)
+
+					token.Attr[linkURIAttrIndex].Val = linkURI.String()
+				}
 			}
 		}()
 	}
