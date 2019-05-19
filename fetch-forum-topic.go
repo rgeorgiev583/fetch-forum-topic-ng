@@ -24,7 +24,7 @@ type resourceFetcherContext struct {
 	baseURL                  *url.URL
 	targetHostDir            string
 	dirpath                  string
-	fetchedResources         map[string]struct{}
+	fetchedResources         map[string]string // map from the resource URI to the content type of the resource
 	replaceResourceReference func(reference string)
 }
 
@@ -174,9 +174,11 @@ func openFileForResourceContent(resourceURI *url.URL, resourceDescription, conte
 }
 
 func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcherContext) (ok bool) {
-	doesResourceHaveToBeFetched := func(resourceURI *url.URL) bool {
-		_, wasResourceFetched := context.fetchedResources[resourceURI.String()]
-		return !wasResourceFetched && resourceURI.Host == context.baseURL.Host
+	var err error
+
+	doesResourceHaveToBeFetched := func(resourceURI *url.URL) (bool, string) {
+		contentType, wasResourceFetched := context.fetchedResources[resourceURI.String()]
+		return !wasResourceFetched && resourceURI.Host == context.baseURL.Host, contentType
 	}
 
 	resourceDescription := "resource " + linkURI.String()
@@ -187,13 +189,14 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 		}
 
 		linkURI = context.baseURL.ResolveReference(linkURI)
-		if !doesResourceHaveToBeFetched(linkURI) {
-			return
-		}
+		hasToBeFetched, contentType := doesResourceHaveToBeFetched(linkURI)
+		if hasToBeFetched {
+			contentType, err = getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.fetchedResources)
+			if err != nil {
+				return
+			}
 
-		contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.fetchedResources)
-		if err != nil {
-			return
+			context.fetchedResources[linkURI.String()] = contentType
 		}
 
 		relativeLinkPath, err := filepath.Rel(context.dirpath, filepath.FromSlash(linkURI.Path))
@@ -209,13 +212,14 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 		relativeReference = adjustResourceFilenameExtension(relativeReference, contentType)
 		context.replaceResourceReference(relativeReference)
 	} else {
-		if !doesResourceHaveToBeFetched(linkURI) {
-			return
-		}
+		hasToBeFetched, contentType := doesResourceHaveToBeFetched(linkURI)
+		if hasToBeFetched {
+			contentType, err = getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.fetchedResources)
+			if err != nil {
+				return
+			}
 
-		contentType, err := getAndWriteResourceToFile(linkURI, resourceDescription, context.targetHostDir, context.fetchedResources)
-		if err != nil {
-			return
+			context.fetchedResources[linkURI.String()] = contentType
 		}
 
 		relativeReference := linkURI.Opaque
@@ -226,7 +230,6 @@ func fetchResourceFromLinkIfNecessary(linkURI *url.URL, context *resourceFetcher
 		context.replaceResourceReference(relativeReference)
 	}
 
-	context.fetchedResources[linkURI.String()] = struct{}{}
 	return true
 }
 
@@ -263,7 +266,7 @@ func fetchLinkedResourcesInCSS(css []byte, context *resourceFetcherContext) (rew
 	return
 }
 
-func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, targetHostDir string, fetchedResources map[string]struct{}) (contentType string, err error) {
+func getAndWriteResourceToFile(resourceURL *url.URL, resourceDescription, targetHostDir string, fetchedResources map[string]string) (contentType string, err error) {
 	contentBody, contentType, err := getResource(resourceURL.String(), resourceDescription)
 	if err != nil {
 		return
@@ -420,7 +423,7 @@ func fetchForumTopicPage(pageNumber uint, targetDir string) {
 
 	pageDirpath := filepath.Dir(filepath.FromSlash(pageURL.Path))
 
-	fetchedResources := map[string]struct{}{}
+	fetchedResources := map[string]string{}
 
 	var prevToken *html.Token
 
